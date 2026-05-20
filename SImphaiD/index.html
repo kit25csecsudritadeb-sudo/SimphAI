@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SimphAI — Adaptive Attention Monitor</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="description" content="SimphAI uses your webcam and AI to track attention, blinks, and gaze — all in-browser, no data uploaded." />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.4/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
+  <!-- WebGazer -->
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <!-- Firebase (optional) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+
+<body>
+
+  <!-- ===== CONSENT MODAL ===== -->
+  <div id="consentModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="consentTitle">
+    <div class="modal-panel consent-panel">
+      <div class="modal-icon">🔒</div>
+      <h2 id="consentTitle">Privacy First</h2>
+      <p>SimphAI processes your webcam feed entirely <strong>inside your browser</strong>. No raw video is ever uploaded or stored.</p>
+      <p class="muted-text">Optionally, you can allow derived telemetry (attention score, blink count, gaze coordinates) to be sent for demo research purposes.</p>
+      <label class="checkbox-label">
+        <input type="checkbox" id="consentTelemetry" />
+        <span>I consent to anonymised telemetry for demo purposes</span>
+      </label>
+      <div class="modal-actions">
+        <button id="consentAccept" class="btn btn-primary">Accept & Continue</button>
+        <button id="consentDecline" class="btn btn-ghost">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SESSION SUMMARY MODAL ===== -->
+  <div id="summaryModal" class="modal-overlay" role="dialog" aria-modal="true">
+    <div class="modal-panel summary-panel">
+      <div class="modal-icon">📊</div>
+      <h2>Session Summary</h2>
+      <div class="summary-grid">
+        <div class="summary-stat">
+          <span class="stat-label">Duration</span>
+          <span class="stat-value" id="sumDuration">—</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-label">Avg. Attention</span>
+          <span class="stat-value" id="sumAvgAttn">—</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-label">Total Blinks</span>
+          <span class="stat-value" id="sumBlinks">—</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-label">Focus Stability</span>
+          <span class="stat-value" id="sumFocus">—</span>
+        </div>
+      </div>
+      <button id="closeSummary" class="btn btn-primary">Close</button>
+    </div>
+  </div>
+
+  <!-- ===== NAVBAR ===== -->
+  <header class="navbar">
+    <div class="nav-left">
+      <div class="logo">Simph<span class="logo-accent">AI</span></div>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="#" id="navDashboard" class="nav-link active">Dashboard</a>
+        <a href="#" id="navMood" class="nav-link">Mood</a>
+        <a href="#" id="navLearning" class="nav-link">Learning</a>
+      </nav>
+    </div>
+    <div class="nav-right">
+      <span class="privacy-badge">🔒 In-browser only · No video uploaded</span>
+    </div>
+  </header>
+
+  <!-- ===== MAIN ===== -->
+  <main class="app-main">
+
+    <!-- LEFT: Camera feed -->
+    <section class="panel panel-camera" aria-label="Camera feed">
+      <div class="video-wrap" id="videoWrap">
+        <video id="camera" autoplay playsinline width="640" height="480" aria-label="Webcam feed"></video>
+        <canvas id="overlay" width="640" height="480" aria-hidden="true"></canvas>
+        <div class="video-overlay-label">Live Feed</div>
+      </div>
+
+      <div class="controls" role="toolbar" aria-label="Session controls">
+        <div class="control-group">
+          <button id="startBtn" class="btn btn-primary btn-icon">▶ Start</button>
+          <button id="stopBtn" class="btn btn-danger btn-icon">■ Stop</button>
+          <button id="calibrateBtn" class="btn btn-secondary btn-icon">⊕ Calibrate Gaze</button>
+          <button id="downloadLog" class="btn btn-ghost btn-icon">↓ Download Log</button>
+        </div>
+        <div class="toggle-group">
+          <label class="toggle-label">
+            <input id="adaptiveToggle" type="checkbox" class="toggle-input" />
+            <span class="toggle-track"></span>
+            <span>Adaptive</span>
+          </label>
+          <label class="toggle-label">
+            <input id="calmModeToggle" type="checkbox" class="toggle-input" />
+            <span class="toggle-track"></span>
+            <span>Calm Mode</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: Metrics -->
+    <aside class="panel panel-metrics" aria-label="Session metrics">
+
+      <!-- Attention score hero -->
+      <div class="metric-hero">
+        <div class="metric-hero-label">Attention Score</div>
+        <div class="metric-hero-value" id="attnVal">—</div>
+        <div class="attention-bar-wrap">
+          <div class="attention-bar" id="attnBar"></div>
+        </div>
+      </div>
+
+      <!-- Status grid -->
+      <div class="status-card">
+        <h3 class="card-title">Live Metrics</h3>
+        <div class="metric-list">
+          <div class="metric-row">
+            <span class="metric-key">Eye Openness (EAR)</span>
+            <span class="metric-val" id="earVal">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-key">Face Detected</span>
+            <span class="metric-val" id="facePresent">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-key">Blinks (session)</span>
+            <span class="metric-val" id="blinkVal">0</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-key">Gaze</span>
+            <span class="metric-val" id="gazeVal">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-key">Head Orientation</span>
+            <span class="metric-val" id="headVal">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- How it works -->
+      <div class="info-card">
+        <h3 class="card-title">Adaptive Logic</h3>
+        <p>When attention drops below <code>0.5</code> for more than <code>4 seconds</code> with Adaptive ON, an intervention alert fires.</p>
+        <p class="muted-text">Calm Mode auto-activates when attention stays critically low.</p>
+      </div>
+
+      <!-- Quickstart -->
+      <div class="info-card">
+        <h3 class="card-title">Quick Start</h3>
+        <ol class="quickstart-list">
+          <li>Accept the consent modal</li>
+          <li>Click <strong>Start</strong></li>
+          <li>Allow camera access</li>
+          <li>Position your face in view</li>
+          <li>Watch your metrics update live</li>
+        </ol>
+        <p class="muted-text">Open browser console (F12) for detailed debug logs.</p>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- Calm badge -->
+  <div id="calmBadge" class="calm-badge" aria-live="polite">🌙 Calm Mode Active</div>
+
+  <!-- Gaze dot -->
+  <div id="gazeDot" aria-hidden="true"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>
